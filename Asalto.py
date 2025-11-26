@@ -297,9 +297,9 @@ if __name__ == "__main__":
   game = Asalto()
 
   # Import the players
-  module = __import__("Team00") # Rebel bot module
+  module = __import__("Team03_learning") # Rebel bot module
   rebel = getattr(module, "Player")()
-  module = __import__("Team00") # Officer bot module
+  module = __import__("Team03_learning") # Officer bot module
   officer = getattr(module, "Player")()
 
   # Play the game
