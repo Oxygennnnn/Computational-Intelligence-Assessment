@@ -14,9 +14,9 @@ class Asalto:
     # Initialise a new game
     self.board = [
       [' ', ' ', '.', '.', '.', ' ', ' '],
-      [' ', ' ', '.', 'O', '.', ' ', ' '],
-      ['R', 'R', '.', 'R', 'O', 'R', 'R'],
-      ['R', 'R', 'R', '.', 'R', 'R', 'R'],
+      [' ', ' ', 'O', '.', 'O', ' ', ' '],
+      ['R', 'R', '.', '.', '.', 'R', 'R'],
+      ['R', 'R', 'R', 'R', 'R', 'R', 'R'],
       ['R', 'R', 'R', 'R', 'R', 'R', 'R'],
       [' ', ' ', 'R', 'R', 'R', ' ', ' '],
       [' ', ' ', 'R', 'R', 'R', ' ', ' ']
@@ -173,19 +173,26 @@ class Asalto:
   # Check if the game is won by one player
   def check_win(self):
 
-    # Checks if the game is won by the fox
+    # Checks if the game is won by the officers
     rebel_count = 0
+    rebel_fortress_count = 0
     for i in range(len(self.board)):
       for j in range(len(self.board[i])):
         if self.board[i][j] == 'R':
           rebel_count += 1
+          if i < 3 and 1 < j < 5:
+             rebel_fortress_count += 1
 
-    # If less than 4 geese left, the fox wins
+    # If less than 9 rebels left, the officers wins
     if rebel_count < 9:
       self.winner = 'O'
       return True
 
     # Checks if the game is won by the rebels
+    if rebel_fortress_count == 9:
+      self.winner = 'R'
+      return True
+
     officer_pos = []
     for i in range(len(self.board)):
       for j in range(len(self.board[i])):
@@ -216,7 +223,6 @@ class Asalto:
     # Play a round of the game
     game_over = False
     rounds_played = 0
-    self.print_board('Initial board:')
     while not game_over:
 
       # The rebel plays first
@@ -234,15 +240,10 @@ class Asalto:
           print("Rebel exceeded time limit!")
           self.winner = 'O'
           game_over = True
-        else:
-          valid = self.is_valid_move(True, move)
-          if not valid:
-            print("Illegal move by rebel!")
-            self.print_board('Board after illegal rebel move (including huff if applied):')
-          else:
-            self.print_board(f'Rebel move {move}:')
-            if self.check_win():
-              game_over = True
+        elif not self.is_valid_move(True, move):
+          print("Illegal move by rebel!")
+        elif self.check_win():
+          game_over = True
 
       if not game_over:
 
@@ -261,15 +262,10 @@ class Asalto:
             print("Officer exceeded time limit!")
             self.winner = 'R'
             game_over = True
-          else:
-            valid = self.is_valid_move(False, move)
-            if not valid:
-              print("Illegal move by officer!")
-              self.print_board('Board after illegal officer move (including huff if applied):')
-            else:
-              self.print_board(f'Officer move {move}:')
-              if self.check_win():
-                game_over = True
+          elif not self.is_valid_move(False, move):
+            print("Illegal move by officer!")
+          elif self.check_win():
+            game_over = True
 
       # Make sure that the game doesn't last forever (deadlock)
       rounds_played += 1
@@ -293,16 +289,40 @@ class Asalto:
 # ===================================================
 # The main function demonstrates how to run a game
 if __name__ == "__main__":
-  # Init the game
-  game = Asalto()
+    import importlib
 
-  # Import the players
-  module = __import__("Team03_learning") # Rebel bot module
-  rebel = getattr(module, "Player")()
-  module = __import__("Team03_learning") # Officer bot module
-  officer = getattr(module, "Player")()
+    NUM_GAMES = 50  # 可以修改局数
+    rebel_wins = 0
+    officer_wins = 0
 
-  # Play the game
-  game.play(rebel, officer)
+    # 导入玩家模块
+    rebel_module = importlib.import_module("Team03_learning")  # Rebel bot
+    officer_module = importlib.import_module("Team03_learning")  # Officer bot
+
+    for game_idx in range(1, NUM_GAMES + 1):
+        print(f"\n===== Game {game_idx} =====")
+        game = Asalto()
+        rebel = getattr(rebel_module, "Player")()
+        officer = getattr(officer_module, "Player")()
+
+        # 这里临时关闭 print_board，只打印关键信息
+        game.print_board = lambda heading=None: None
+
+        game.play(rebel, officer)
+        if game.winner == 'R':
+            rebel_wins += 1
+            print(f"Game {game_idx} winner: Rebels")
+        elif game.winner == 'O':
+            officer_wins += 1
+            print(f"Game {game_idx} winner: Officers")
+        else:
+            print(f"Game {game_idx} ended in a draw")
+
+    print("\n===== Summary =====")
+    print(f"Total games: {NUM_GAMES}")
+    print(f"Rebels won: {rebel_wins}")
+    print(f"Officers won: {officer_wins}")
+
 
 # ==== End of file
+
