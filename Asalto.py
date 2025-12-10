@@ -296,8 +296,8 @@ if __name__ == "__main__":
     officer_wins = 0
 
     # 导入玩家模块
-    rebel_module = importlib.import_module("Team03_learning")  # Rebel bot
-    officer_module = importlib.import_module("Team03_learning")  # Officer bot
+    rebel_module = importlib.import_module("Team03_learning_1")  # Rebel bot
+    officer_module = importlib.import_module("Team03_learning_1")  # Officer bot
 
     for game_idx in range(1, NUM_GAMES + 1):
         print(f"\n===== Game {game_idx} =====")
