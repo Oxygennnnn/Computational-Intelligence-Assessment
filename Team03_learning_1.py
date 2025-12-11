@@ -403,97 +403,111 @@ class Player:
     with open(log_file, 'w') as f:
         f.write("=== Self-Play Training Log ===\n")
 
-    for iteration in range(1, num_iterations + 1):
-        samples: List[ReplaySample] = []
-        rebel_wins, officer_wins = 0, 0
-        total_turns: List[int] = []
+    # 记录当前迭代与对局，便于意外中断时写入日志
+    iteration = 0
+    game_idx = 0
+    turns = 0
 
-        for game_idx in range(1, games_per_iter + 1):
-            board = initial_board()
-            history: List[Tuple[Tensor, bool, float]] = []
-            is_rebel_turn = True
-            turns = 0
-            winner = 0
-            epsilon = epsilon_start - (epsilon_start - epsilon_end) * (iteration - 1) / num_iterations
+    try:
+        for iteration in range(1, num_iterations + 1):
+            samples: List[ReplaySample] = []
+            rebel_wins, officer_wins = 0, 0
+            total_turns: List[int] = []
 
-            while turns < max_turns:
-                turns += 1
-                moves = self.rules.generate_rebel_moves(board) if is_rebel_turn else self.rules.generate_officer_moves(board)
-                if not moves:
-                    winner = -1 if is_rebel_turn else 1
-                    break
+            for game_idx in range(1, games_per_iter + 1):
+                board = initial_board()
+                history: List[Tuple[Tensor, bool, float]] = []
+                is_rebel_turn = True
+                turns = 0
+                winner = 0
+                epsilon = epsilon_start - (epsilon_start - epsilon_end) * (iteration - 1) / num_iterations
 
-                board_tensor = self._board_to_tensor(board, is_rebel_turn)
-                move = self._choose_move(board, is_rebel_turn, epsilon)
-                
-                if is_rebel_turn:
-                    captured_before = sum(row.count('O') for row in board)
-                    board = self.rules.apply_move(board, move, is_rebel_turn)
-                    captured_after = sum(row.count('O') for row in board)
-                    capture_bonus = (captured_before - captured_after) * 0.5
-                else:
-                    board = self.rules.apply_move(board, move, is_rebel_turn)
-                    capture_bonus = 0.0
+                while turns < max_turns:
+                    turns += 1
+                    moves = self.rules.generate_rebel_moves(board) if is_rebel_turn else self.rules.generate_officer_moves(board)
+                    if not moves:
+                        winner = -1 if is_rebel_turn else 1
+                        break
 
-                history.append((board_tensor, is_rebel_turn, capture_bonus if is_rebel_turn else 0.0))
-                outcome = self.rules.outcome(board)
-                if outcome != 0:
-                    winner = outcome
-                    break
-                is_rebel_turn = not is_rebel_turn
+                    board_tensor = self._board_to_tensor(board, is_rebel_turn)
+                    move = self._choose_move(board, is_rebel_turn, epsilon)
+                    
+                    if is_rebel_turn:
+                        captured_before = sum(row.count('O') for row in board)
+                        board = self.rules.apply_move(board, move, is_rebel_turn)
+                        captured_after = sum(row.count('O') for row in board)
+                        capture_bonus = (captured_before - captured_after) * 0.5
+                    else:
+                        board = self.rules.apply_move(board, move, is_rebel_turn)
+                        capture_bonus = 0.0
 
-            total_turns.append(turns)
-            rebel_wins += winner > 0
-            officer_wins += winner < 0
+                    history.append((board_tensor, is_rebel_turn, capture_bonus if is_rebel_turn else 0.0))
+                    outcome = self.rules.outcome(board)
+                    if outcome != 0:
+                        winner = outcome
+                        break
+                    is_rebel_turn = not is_rebel_turn
 
-            for board_tensor, rebel_to_move, step_capture_bonus in history:
-                bt = board_tensor.cpu().numpy()
-                board_from_tensor = [[' ' for _ in range(7)] for _ in range(7)]
-                for r in range(7):
-                    for c in range(7):
-                        if bt[0, r, c] > 0.5:
-                            board_from_tensor[r][c] = 'R'
-                        elif bt[1, r, c] > 0.5:
-                            board_from_tensor[r][c] = 'O'
-                        else:
-                            board_from_tensor[r][c] = '.' if bt[2, r, c] > 0.5 else ' '
+                total_turns.append(turns)
+                rebel_wins += winner > 0
+                officer_wins += winner < 0
 
-                phi_rebel = self._compute_potential(board_from_tensor, rebel_to_move)
-                phi_current = phi_rebel if rebel_to_move else -phi_rebel
+                for board_tensor, rebel_to_move, step_capture_bonus in history:
+                    bt = board_tensor.cpu().numpy()
+                    board_from_tensor = [[' ' for _ in range(7)] for _ in range(7)]
+                    for r in range(7):
+                        for c in range(7):
+                            if bt[0, r, c] > 0.5:
+                                board_from_tensor[r][c] = 'R'
+                            elif bt[1, r, c] > 0.5:
+                                board_from_tensor[r][c] = 'O'
+                            else:
+                                board_from_tensor[r][c] = '.' if bt[2, r, c] > 0.5 else ' '
 
-                rebel_terminal = 0.0
-                if winner > 0:
-                    rebel_terminal = 1.5
-                elif winner < 0:
-                    rebel_terminal = -0.5
-                winner_val = rebel_terminal if rebel_to_move else -rebel_terminal
+                    phi_rebel = self._compute_potential(board_from_tensor, rebel_to_move)
+                    phi_current = phi_rebel if rebel_to_move else -phi_rebel
 
-                target = winner_val + shaping_alpha * phi_current + (step_capture_bonus if rebel_to_move else 0.0)
-                samples.append(ReplaySample(board_tensor, float(target)))
+                    rebel_terminal = 0.0
+                    if winner > 0:
+                        rebel_terminal = 1.5
+                    elif winner < 0:
+                        rebel_terminal = -0.5
+                    winner_val = rebel_terminal if rebel_to_move else -rebel_terminal
 
-            msg = f"[SELF-PLAY] game={game_idx} winner={'R' if winner>0 else ('O' if winner<0 else 'draw')} turns={turns}"
+                    target = winner_val + shaping_alpha * phi_current + (step_capture_bonus if rebel_to_move else 0.0)
+                    samples.append(ReplaySample(board_tensor, float(target)))
+
+                msg = f"[SELF-PLAY] game={game_idx} winner={'R' if winner>0 else ('O' if winner<0 else 'draw')} turns={turns}"
+                print(msg)
+                with open(log_file, 'a') as f:
+                    f.write(msg + "\n")
+
+            self._extend_buffer(samples)
+            loss = self._update_model(batch_size)
+
+            msg = (f"[TRAIN] iter={iteration:03d} games={games_per_iter} "
+                   f"rebel_win={rebel_wins/games_per_iter:.2f} "
+                   f"officer_win={officer_wins/games_per_iter:.2f} "
+                   f"avg_turns={statistics.mean(total_turns):.1f} loss={loss:.4f}")
             print(msg)
             with open(log_file, 'a') as f:
                 f.write(msg + "\n")
 
-        self._extend_buffer(samples)
-        loss = self._update_model(batch_size)
-
-        msg = (f"[TRAIN] iter={iteration:03d} games={games_per_iter} "
-               f"rebel_win={rebel_wins/games_per_iter:.2f} "
-               f"officer_win={officer_wins/games_per_iter:.2f} "
-               f"avg_turns={statistics.mean(total_turns):.1f} loss={loss:.4f}")
+            if save_path and iteration % checkpoint_interval == 0:
+                checkpoint_file = save_path.replace('.pt', f'_iter{iteration}.pt')
+                self.save(checkpoint_file)
+                msg = f"[CHECKPOINT] saved to {checkpoint_file}"
+                print(msg)
+                with open(log_file, 'a') as f:
+                    f.write(msg + "\n")
+    except KeyboardInterrupt:
+        # 在意外/手动中断时记录进度，避免日志缺失
+        msg = (f"[ABORTED] interrupted at iter={iteration} game={game_idx} "
+               f"after {turns} turns; partial results preserved.")
         print(msg)
         with open(log_file, 'a') as f:
             f.write(msg + "\n")
-
-        if save_path and iteration % checkpoint_interval == 0:
-            checkpoint_file = save_path.replace('.pt', f'_iter{iteration}.pt')
-            self.save(checkpoint_file)
-            msg = f"[CHECKPOINT] saved to {checkpoint_file}"
-            print(msg)
-            with open(log_file, 'a') as f:
-                f.write(msg + "\n")
+        raise
 
       # 每隔 checkpoint_interval 迭代保存一个带迭代编号的新文件
       # if iteration % checkpoint_interval == 0:
