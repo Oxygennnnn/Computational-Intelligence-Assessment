@@ -1,14 +1,3 @@
-"""Deep-learning powered Asalto player for Team03.
-
-Features
---------
-* `Player.play_rebel` / `Player.play_officer` run a neural policy by default.
-* `Player.train_self_play` plays short matches against itself, logs win rates,
-  and trains a value network (stored in `team03_value_net.pt`).
-* A small CLI (see `python Team03_learning.py --help`) can launch training
-  before you plug the model back into `Asalto.py` for grading matches.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -231,7 +220,6 @@ class ValueNet(nn.Module):
             nn.Conv2d(64, 64, kernel_size=3, padding=1),
             nn.ReLU(),
         )
-        # 先 dummy input 计算 flatten size
         dummy = torch.zeros(1,4,7,7)
         with torch.no_grad():
             enc_out = self.encoder(dummy)
@@ -317,50 +305,34 @@ class Player:
 
 
   def _compute_potential(self, board: Sequence[Sequence[str]], is_rebel_turn: bool) -> float:
-    # 1. 获取位置
     rebels_list = list(self.rules.piece_positions(board, 'R'))
-    rebel_set = set(rebels_list) # <--- 关键优化：转为集合，极大加速后续查找
+    rebel_set = set(rebels_list)
     officers = list(self.rules.piece_positions(board, 'O'))
 
-    # 2. 输赢终局判定 (极高权重，防止被后续的分数冲淡)
-    # 如果 Rebel 没了，或者 Officer 没了，直接返回最大值/最小值
-    if not rebels_list: return -1.0 
+    if not rebels_list: return -1.0
     if not officers: return 1.0
 
-    # --- 评分逻辑 ---
-
-    # A. 基础分：保命 (Material)
     material_score = len(rebels_list) / 24.0
 
-    # B. 进阶分：堵路 (Clustering/Blocking)
-    # 这一项是 Rebel 能够逼平甚至战胜 Officer 的核心
     support_score = 0
     for r, c in rebels_list:
         for dr in [-1, 0, 1]:
             for dc in [-1, 0, 1]:
                 if dr == 0 and dc == 0: continue
-                # 检查周围是否有队友
-                if (r+dr, c+dc) in rebel_set: # 这里用 set 查找非常快
+                if (r+dr, c+dc) in rebel_set:
                     support_score += 1
-    # 归一化：假设每个兵平均有 2-3 个队友支持就是很好的阵型
     support_score /= max(1, len(rebels_list) * 8)
 
-    # C. 进攻分：逼近要塞中心 (1, 3)
     distance_score = 0
     for r, c in rebels_list:
-        # 曼哈顿距离：越小越好。最大距离约 8 (从6,6到1,3)
         dist = abs(r - 1) + abs(c - 3)
-        distance_score += (10.0 - dist) 
+        distance_score += (10.0 - dist)
     distance_score /= max(1, len(rebels_list) * 10)
 
-    # --- 组合 ---
-    # 早期训练最容易死，所以 Material 权重最高
-    # 中期需要学会抱团，Support 权重次之
-    phi = (0.4 * material_score + 
-           0.4 * support_score + 
-           0.2 * distance_score) 
-           
-    # 映射到 [-1, 1]
+    phi = (0.4 * material_score +
+           0.4 * support_score +
+           0.2 * distance_score)
+
     return 2.0 * phi - 1.0
 
   
@@ -393,133 +365,107 @@ class Player:
     batch_size: int = 128,
     save_path: str = 'team03_value_net.pt',
     checkpoint_interval: int = 10,
-    log_file: str = 'Log.txt',  # 新增日志文件参数
+    log_file: str = 'Log.txt',
 ) -> None:
     epsilon_start = max(0.4, epsilon)
     epsilon_end = 0.1
     shaping_alpha = 1.5
 
-    # 清空日志文件
     with open(log_file, 'w') as f:
         f.write("=== Self-Play Training Log ===\n")
 
-    # 记录当前迭代与对局，便于意外中断时写入日志
-    iteration = 0
-    game_idx = 0
-    turns = 0
+    for iteration in range(1, num_iterations + 1):
+        samples: List[ReplaySample] = []
+        rebel_wins, officer_wins = 0, 0
+        total_turns: List[int] = []
 
-    try:
-        for iteration in range(1, num_iterations + 1):
-            samples: List[ReplaySample] = []
-            rebel_wins, officer_wins = 0, 0
-            total_turns: List[int] = []
+        for game_idx in range(1, games_per_iter + 1):
+            board = initial_board()
+            history: List[Tuple[Tensor, bool, float]] = []
+            is_rebel_turn = True
+            turns = 0
+            winner = 0
+            epsilon = epsilon_start - (epsilon_start - epsilon_end) * (iteration - 1) / num_iterations
 
-            for game_idx in range(1, games_per_iter + 1):
-                board = initial_board()
-                history: List[Tuple[Tensor, bool, float]] = []
-                is_rebel_turn = True
-                turns = 0
-                winner = 0
-                epsilon = epsilon_start - (epsilon_start - epsilon_end) * (iteration - 1) / num_iterations
+            while turns < max_turns:
+                turns += 1
+                moves = self.rules.generate_rebel_moves(board) if is_rebel_turn else self.rules.generate_officer_moves(board)
+                if not moves:
+                    winner = -1 if is_rebel_turn else 1
+                    break
 
-                while turns < max_turns:
-                    turns += 1
-                    moves = self.rules.generate_rebel_moves(board) if is_rebel_turn else self.rules.generate_officer_moves(board)
-                    if not moves:
-                        winner = -1 if is_rebel_turn else 1
-                        break
+                board_tensor = self._board_to_tensor(board, is_rebel_turn)
+                move = self._choose_move(board, is_rebel_turn, epsilon)
+                
+                if is_rebel_turn:
+                    captured_before = sum(row.count('O') for row in board)
+                    board = self.rules.apply_move(board, move, is_rebel_turn)
+                    captured_after = sum(row.count('O') for row in board)
+                    capture_bonus = (captured_before - captured_after) * 0.5
+                else:
+                    board = self.rules.apply_move(board, move, is_rebel_turn)
+                    capture_bonus = 0.0
 
-                    board_tensor = self._board_to_tensor(board, is_rebel_turn)
-                    move = self._choose_move(board, is_rebel_turn, epsilon)
-                    
-                    if is_rebel_turn:
-                        captured_before = sum(row.count('O') for row in board)
-                        board = self.rules.apply_move(board, move, is_rebel_turn)
-                        captured_after = sum(row.count('O') for row in board)
-                        capture_bonus = (captured_before - captured_after) * 0.5
-                    else:
-                        board = self.rules.apply_move(board, move, is_rebel_turn)
-                        capture_bonus = 0.0
+                history.append((board_tensor, is_rebel_turn, capture_bonus if is_rebel_turn else 0.0))
+                outcome = self.rules.outcome(board)
+                if outcome != 0:
+                    winner = outcome
+                    break
+                is_rebel_turn = not is_rebel_turn
 
-                    history.append((board_tensor, is_rebel_turn, capture_bonus if is_rebel_turn else 0.0))
-                    outcome = self.rules.outcome(board)
-                    if outcome != 0:
-                        winner = outcome
-                        break
-                    is_rebel_turn = not is_rebel_turn
+            total_turns.append(turns)
+            rebel_wins += winner > 0
+            officer_wins += winner < 0
 
-                total_turns.append(turns)
-                rebel_wins += winner > 0
-                officer_wins += winner < 0
+            for board_tensor, rebel_to_move, step_capture_bonus in history:
+                bt = board_tensor.cpu().numpy()
+                board_from_tensor = [[' ' for _ in range(7)] for _ in range(7)]
+                for r in range(7):
+                    for c in range(7):
+                        if bt[0, r, c] > 0.5:
+                            board_from_tensor[r][c] = 'R'
+                        elif bt[1, r, c] > 0.5:
+                            board_from_tensor[r][c] = 'O'
+                        else:
+                            board_from_tensor[r][c] = '.' if bt[2, r, c] > 0.5 else ' '
 
-                for board_tensor, rebel_to_move, step_capture_bonus in history:
-                    bt = board_tensor.cpu().numpy()
-                    board_from_tensor = [[' ' for _ in range(7)] for _ in range(7)]
-                    for r in range(7):
-                        for c in range(7):
-                            if bt[0, r, c] > 0.5:
-                                board_from_tensor[r][c] = 'R'
-                            elif bt[1, r, c] > 0.5:
-                                board_from_tensor[r][c] = 'O'
-                            else:
-                                board_from_tensor[r][c] = '.' if bt[2, r, c] > 0.5 else ' '
+                phi_rebel = self._compute_potential(board_from_tensor, rebel_to_move)
+                phi_current = phi_rebel if rebel_to_move else -phi_rebel
 
-                    phi_rebel = self._compute_potential(board_from_tensor, rebel_to_move)
-                    phi_current = phi_rebel if rebel_to_move else -phi_rebel
+                rebel_terminal = 0.0
+                if winner > 0:
+                    rebel_terminal = 1.5
+                elif winner < 0:
+                    rebel_terminal = -0.5
+                winner_val = rebel_terminal if rebel_to_move else -rebel_terminal
 
-                    rebel_terminal = 0.0
-                    if winner > 0:
-                        rebel_terminal = 1.5
-                    elif winner < 0:
-                        rebel_terminal = -0.5
-                    winner_val = rebel_terminal if rebel_to_move else -rebel_terminal
+                target = winner_val + shaping_alpha * phi_current + (step_capture_bonus if rebel_to_move else 0.0)
+                samples.append(ReplaySample(board_tensor, float(target)))
 
-                    target = winner_val + shaping_alpha * phi_current + (step_capture_bonus if rebel_to_move else 0.0)
-                    samples.append(ReplaySample(board_tensor, float(target)))
-
-                msg = f"[SELF-PLAY] game={game_idx} winner={'R' if winner>0 else ('O' if winner<0 else 'draw')} turns={turns}"
-                print(msg)
-                with open(log_file, 'a') as f:
-                    f.write(msg + "\n")
-
-            self._extend_buffer(samples)
-            loss = self._update_model(batch_size)
-
-            msg = (f"[TRAIN] iter={iteration:03d} games={games_per_iter} "
-                   f"rebel_win={rebel_wins/games_per_iter:.2f} "
-                   f"officer_win={officer_wins/games_per_iter:.2f} "
-                   f"avg_turns={statistics.mean(total_turns):.1f} loss={loss:.4f}")
+            msg = f"[SELF-PLAY] game={game_idx} winner={'R' if winner>0 else ('O' if winner<0 else 'draw')} turns={turns}"
             print(msg)
             with open(log_file, 'a') as f:
                 f.write(msg + "\n")
 
-            if save_path and iteration % checkpoint_interval == 0:
-                checkpoint_file = save_path.replace('.pt', f'_iter{iteration}.pt')
-                self.save(checkpoint_file)
-                msg = f"[CHECKPOINT] saved to {checkpoint_file}"
-                print(msg)
-                with open(log_file, 'a') as f:
-                    f.write(msg + "\n")
-    except KeyboardInterrupt:
-        # 在意外/手动中断时记录进度，避免日志缺失
-        msg = (f"[ABORTED] interrupted at iter={iteration} game={game_idx} "
-               f"after {turns} turns; partial results preserved.")
+        self._extend_buffer(samples)
+        loss = self._update_model(batch_size)
+
+        msg = (f"[TRAIN] iter={iteration:03d} games={games_per_iter} "
+               f"rebel_win={rebel_wins/games_per_iter:.2f} "
+               f"officer_win={officer_wins/games_per_iter:.2f} "
+               f"avg_turns={statistics.mean(total_turns):.1f} loss={loss:.4f}")
         print(msg)
         with open(log_file, 'a') as f:
             f.write(msg + "\n")
-        raise
 
-      # 每隔 checkpoint_interval 迭代保存一个带迭代编号的新文件
-      # if iteration % checkpoint_interval == 0:
-      #     checkpoint_name = save_path.replace('.pt', f'_iter{iteration}.pt')
-      #     self.save(checkpoint_name)
-      #     print(f"[CHECKPOINT] Saved checkpoint at iteration {iteration} -> {checkpoint_name}")
-      #     print(
-      #         f"[STATS] iter={iteration} games={stats['games']} "
-      #         f"rebel_win={stats['rebel_win_rate']:.2f} "
-      #         f"officer_win={stats['officer_win_rate']:.2f} "
-      #         f"avg_turns={stats['avg_turns']:.1f} loss={loss:.4f}"
-      #     )
+        if save_path and iteration % checkpoint_interval == 0:
+            checkpoint_file = save_path.replace('.pt', f'_iter{iteration}.pt')
+            self.save(checkpoint_file)
+            msg = f"[CHECKPOINT] saved to {checkpoint_file}"
+            print(msg)
+            with open(log_file, 'a') as f:
+                f.write(msg + "\n")
+
 
   def _collect_self_play(self, games: int, max_turns: int, epsilon_start: float = 0.8, epsilon_end: float = 0.1) -> Tuple[List[ReplaySample], dict]:
     samples: List[ReplaySample] = []
@@ -535,8 +481,7 @@ class Player:
         turns = 0
         winner = 0
 
-        # epsilon decay
-        epsilon = epsilon_start * (1 - (game_idx-1)/games)**0.5  # sqrt decay，更慢收敛，早期多探索
+        epsilon = epsilon_start * (1 - (game_idx-1)/games)**0.5
 
         while turns < max_turns:
             turns += 1
@@ -576,15 +521,13 @@ class Player:
                   else:
                       board_from_tensor[r][c] = '.' if bt[2, r, c] > 0.5 else ' '
 
-          # 势函数：从 Rebel 视角定义，再转换到当前走棋方视角
           phi_rebel = self._compute_potential(board_from_tensor, rebel_to_move)
           phi_current = phi_rebel if rebel_to_move else -phi_rebel
 
-          # 终局奖励同样对 Rebel 略有偏置
           rebel_terminal = 0.0
-          if winner > 0:      # Rebel 赢
+          if winner > 0:
               rebel_terminal = 1.5
-          elif winner < 0:    # Rebel 输
+          elif winner < 0:
               rebel_terminal = -0.5
           winner_val = rebel_terminal if rebel_to_move else -rebel_terminal
 
