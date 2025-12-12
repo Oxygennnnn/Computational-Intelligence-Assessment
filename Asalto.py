@@ -302,8 +302,8 @@ if __name__ == "__main__":
     for game_idx in range(1, NUM_GAMES + 1):
         print(f"\n===== Game {game_idx} =====")
         game = Asalto()
-        rebel = getattr(rebel_module, "Player")()
-        officer = getattr(officer_module, "Player")()
+        rebel = getattr(rebel_module, "Player")(model_path="team03_value_net_iter1000.pt")
+        officer = getattr(officer_module, "Player")(model_path="team03_value_net_iter1000.pt")
 
         # 这里临时关闭 print_board，只打印关键信息
         game.print_board = lambda heading=None: None
